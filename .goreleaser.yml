@@ -49,6 +49,9 @@ signs:
       - "--detach-sign"
       - "${artifact}"
 release:
+  github:
+    owner: Tigger2014
+    name: terraform-provider-tss
   # If you want to manually examine the release before its live, uncomment this line:
   # draft: true
 changelog:
