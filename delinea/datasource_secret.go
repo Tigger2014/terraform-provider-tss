@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/DelineaXPM/tss-sdk-go/v2/server"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -24,19 +25,26 @@ func (d *TSSSecretDataSource) Metadata(ctx context.Context, req datasource.Metad
 // Schema defines the schema for the data source
 func (d *TSSSecretDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
+		Description: "Fetches a secret from Delinea Secret Server. All fields are always returned in the 'fields' map. Optionally specify 'field' to also populate the 'value' attribute.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Required:    true,
 				Description: "The ID of the secret to retrieve.",
 			},
 			"field": schema.StringAttribute{
-				Required:    true,
-				Description: "The field to extract from the secret.",
+				Optional:    true,
+				Description: "The specific field to extract from the secret. When set, the 'value' attribute is populated.",
 			},
 			"value": schema.StringAttribute{
 				Computed:    true,
 				Sensitive:   true,
-				Description: "The value of the requested field from the secret.",
+				Description: "The value of the field specified by 'field'. Null when 'field' is not set.",
+			},
+			"fields": schema.MapAttribute{
+				Computed:    true,
+				Sensitive:   true,
+				ElementType: types.StringType,
+				Description: "A map of all field slugs to their values from the secret.",
 			},
 		},
 	}
@@ -72,6 +80,7 @@ func (d *TSSSecretDataSource) Read(ctx context.Context, req datasource.ReadReque
 		SecretID    types.String `tfsdk:"id"`
 		Field       types.String `tfsdk:"field"`
 		SecretValue types.String `tfsdk:"value"`
+		Fields      types.Map    `tfsdk:"fields"`
 	}
 
 	// Read the configuration from the request
@@ -111,19 +120,35 @@ func (d *TSSSecretDataSource) Read(ctx context.Context, req datasource.ReadReque
 	}
 
 	// Get the field name dynamically
-	fieldName := state.Field.ValueString()
+	if !state.Field.IsNull() && !state.Field.IsUnknown() && state.Field.ValueString() != "" {
+		fieldName := state.Field.ValueString()
 
-	fmt.Printf("[DEBUG] using '%s' field of secret with id %d", fieldName, secretID)
+		fmt.Printf("[DEBUG] using '%s' field of secret with id %d", fieldName, secretID)
 
-	// Extract the secret value
-	fieldValue, ok := secret.Field(fieldName)
-	if !ok {
-		resp.Diagnostics.AddError("Field Not Found", fmt.Sprintf("The secret does not contain the field '%s'", fieldName))
-		return
+		// Extract the secret value
+		fieldValue, ok := secret.Field(fieldName)
+		if !ok {
+			resp.Diagnostics.AddError("Field Not Found", fmt.Sprintf("The secret does not contain the field '%s'", fieldName))
+			return
+		}
+
+		// Set the secret value in the state
+		state.SecretValue = types.StringValue(fieldValue)
+		state.Fields = types.MapNull(types.StringType)
+	} else {
+		// No specific field requested — build the full 'fields' map, leave 'value' null
+		allFields := make(map[string]attr.Value, len(secret.Fields))
+		for _, f := range secret.Fields {
+			allFields[f.Slug] = types.StringValue(f.ItemValue)
+		}
+		fieldsMap, fieldsDiags := types.MapValue(types.StringType, allFields)
+		resp.Diagnostics.Append(fieldsDiags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		state.Fields = fieldsMap
+		state.SecretValue = types.StringNull()
 	}
-
-	// Set the secret value in the state
-	state.SecretValue = types.StringValue(fieldValue)
 
 	// Set the state
 	diags = resp.State.Set(ctx, &state)

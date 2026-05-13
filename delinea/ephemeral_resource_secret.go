@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DelineaXPM/tss-sdk-go/v2/server"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
 	"github.com/hashicorp/terraform-plugin-framework/ephemeral/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -28,6 +29,7 @@ type TSSSecretEphemeralResourceModel struct {
 	SecretID    types.String `tfsdk:"id"`
 	Field       types.String `tfsdk:"field"`
 	SecretValue types.String `tfsdk:"value"`
+	Fields      types.Map    `tfsdk:"fields"`
 }
 
 // Define private data structure (optional)
@@ -39,18 +41,26 @@ type TSSSecretPrivateData struct {
 
 func (r *TSSSecretEphemeralResource) Schema(ctx context.Context, req ephemeral.SchemaRequest, resp *ephemeral.SchemaResponse) {
 	resp.Schema = schema.Schema{
+		Description: "Fetches a secret from Delinea Secret Server ephemerally. All fields are always returned in the 'fields' map. Optionally specify 'field' to also populate the 'value' attribute.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Required:    true,
 				Description: "The ID of the secret to retrieve.",
 			},
 			"field": schema.StringAttribute{
-				Required:    true,
-				Description: "The field to extract from the secret.",
+				Optional:    true,
+				Description: "The specific field to extract from the secret. When set, the 'value' attribute is populated.",
 			},
 			"value": schema.StringAttribute{
 				Computed:    true,
-				Description: "The value of the requested field from the secret.",
+				Sensitive:   true,
+				Description: "The value of the field specified by 'field'. Null when 'field' is not set.",
+			},
+			"fields": schema.MapAttribute{
+				Computed:    true,
+				Sensitive:   true,
+				ElementType: types.StringType,
+				Description: "A map of all field slugs to their values from the secret.",
 			},
 		},
 	}
@@ -71,13 +81,12 @@ func (r *TSSSecretEphemeralResource) Open(ctx context.Context, req ephemeral.Ope
 		return
 	}
 
-	// Check for required fields in the model (secret_id and field)
-	if data.SecretID.IsNull() || data.Field.IsNull() {
-		resp.Diagnostics.AddError("Missing Required Field", "Both secret_id and field are required")
+	if data.SecretID.IsNull() {
+		resp.Diagnostics.AddError("Missing Required Field", "id is required")
 		return
 	}
 
-	// Initialize your Delinea API client (e.g., using the secret_id and field)
+	// Initialize the Delinea API client
 	client, err := server.New(*r.clientConfig)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Creation Error", err.Error())
@@ -100,17 +109,34 @@ func (r *TSSSecretEphemeralResource) Open(ctx context.Context, req ephemeral.Ope
 		return
 	}
 
-	log.Printf("[DEBUG] using '%s' field of secret with id %d", data.Field.ValueString(), secretID)
+	if !data.Field.IsNull() && !data.Field.IsUnknown() && data.Field.ValueString() != "" {
+		// 'field' is set — fetch just that one value, leave 'fields' map null
+		log.Printf("[DEBUG] using '%s' field of secret with id %d", data.Field.ValueString(), secretID)
 
-	// Extract the requested field value (assuming Field() method is available)
-	fieldValue, ok := secret.Field(data.Field.ValueString())
-	if !ok {
-		resp.Diagnostics.AddError("Field Not Found", fmt.Sprintf("Field %s not found in the secret", data.Field.ValueString()))
-		return
+		// Extract the requested field value (assuming Field() method is available)
+		fieldValue, ok := secret.Field(data.Field.ValueString())
+		if !ok {
+			resp.Diagnostics.AddError("Field Not Found", fmt.Sprintf("Field %s not found in the secret", data.Field.ValueString()))
+			return
+		}
+
+		// Set the secret value in the result
+		data.SecretValue = types.StringValue(fieldValue)
+		data.Fields = types.MapNull(types.StringType)
+	} else {
+		// No specific field requested — build the full 'fields' map, leave 'value' null
+		allFields := make(map[string]attr.Value, len(secret.Fields))
+		for _, f := range secret.Fields {
+			allFields[f.Slug] = types.StringValue(f.ItemValue)
+		}
+		fieldsMap, fieldsDiags := types.MapValue(types.StringType, allFields)
+		resp.Diagnostics.Append(fieldsDiags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		data.Fields = fieldsMap
+		data.SecretValue = types.StringNull()
 	}
-
-	// Set the secret value in the result
-	data.SecretValue = types.StringValue(fieldValue)
 
 	// Save the data into the ephemeral result state
 	resp.Diagnostics.Append(resp.Result.Set(ctx, &data)...)
