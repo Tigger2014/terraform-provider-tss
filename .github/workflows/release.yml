@@ -11,6 +11,7 @@
 #
 name: release
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -34,8 +35,8 @@ jobs:
         id: import_gpg
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
         with:
-          gpg_private_key: ${{ secrets.TERRAFORM_REGISTRY_GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.TERRAFORM_REGISTRY_PASSPHRASE }}
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
       -
         name: Run GoReleaser
         uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
